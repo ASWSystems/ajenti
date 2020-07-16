@@ -202,7 +202,7 @@ class GateMiddleware(object):
             timeout = 600
             with Timeout(timeout) as t:
                 q = gate.q_http_replies.register()
-                rq = gate.stream.send(request_object)
+                rq = gate.stream.send(request_object, http_context.body_iterator)
                 while True:
                     resp = q.get(t)
                     if resp.id == rq.id:
@@ -233,25 +233,25 @@ class GateMiddleware(object):
             session.set_cookie(http_context)
 
         http_context.respond(resp.object['status'])
-        content = resp.object['content']
+        content = resp.payload_iter
 
         end_time = time.time()
         logging.debug(
             '%.03fs %12s   %s %s %s',
             end_time - start_time,
-            str_fsize(len(content[0] if content else [])),
+            # str_fsize(len(content[0] if content else [])),
             str(http_context.status).split()[0],
             http_context.env['REQUEST_METHOD'],
             http_context.path
         )
-
-        for index, item in enumerate(content):
-            if isinstance(item, six.text_type):
-                content[index] = item.encode('utf-8')
 
         # Touch the session in case system time has dramatically
         # changed during request
         if session:
             session.touch()
 
-        return content
+        return self._encode_content(content)
+
+    def _encode_content(self, content):
+        for p in content:
+            yield p # p.encode('utf-8')

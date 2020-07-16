@@ -1,0 +1,21 @@
+auth:
+  allow_sudo: true
+  emails: {}
+  provider: os
+bind:
+  host: 0.0.0.0
+  mode: tcp
+  port: 8000
+color: deeporange
+language: en
+max_sessions: 10
+name: ajenti-dev
+restricted_user: nobody
+session_max_time: 3600
+ssl:
+  certificate: null
+  client_auth:
+    certificates: []
+    enable: false
+    force: false
+  enable: false

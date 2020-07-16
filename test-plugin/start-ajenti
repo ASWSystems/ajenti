@@ -1,0 +1,3 @@
+#!/bin/sh
+
+./ajenti-panel/ajenti-panel --config=./test-plugin/config.yml --stock-plugins --plugins=test-plugin -v  --autologin

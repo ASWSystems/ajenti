@@ -29,18 +29,32 @@ class WorkerGate(object):
         self.q_socket_messages = BroadcastQueue()
 
     def start(self):
-        pipe_parent, pipe_child = gipc.pipe(
+
+        # gipc pipes used for sharing data with process
+        # before, we used single pipe to send serialized data
+        # to the worker process, but when we've implemented body generator
+        # we will be unable to pickle it
+
+        # So we are creating one more pipe (payload_master_pipe, payload_worker_pipe)
+        # that will be used for transfer body's generator content
+
+        master_pipe, worker_pipe = gipc.pipe(
             duplex=True,
             encoder=lambda x: pickle.dumps(x, 2),
         )
-        self.stream = GateStreamServerEndpoint(pipe_parent)
-        stream_child = GateStreamWorkerEndpoint(pipe_child)
+        payload_master_pipe, payload_worker_pipe = gipc.pipe(
+            duplex=True,
+        )
+
+        self.stream = GateStreamServerEndpoint(master_pipe, payload_master_pipe)
+        stream_child = GateStreamWorkerEndpoint(worker_pipe, payload_worker_pipe)
 
         self.process = gipc.start_process(
             target=self._target,
             kwargs={
                 'stream': stream_child,
-                '_pipe': pipe_child,
+                '_pipe': worker_pipe,
+                '_payload_pipe': payload_worker_pipe,
             }
         )
 
@@ -112,6 +126,6 @@ class WorkerGate(object):
         except greenlet.GreenletExit:
             pass
 
-    def _target(self, stream=None, _pipe=None):
+    def _target(self, stream=None, **kwargs):
         self.worker = Worker(stream, self)
         self.worker.run()

@@ -129,7 +129,7 @@ class Worker(object):
             socket_namespaces = {}
             while True:
                 rq = self.stream.recv()
-                
+
                 if not rq:
                     return
 
@@ -193,7 +193,7 @@ class Worker(object):
         }
 
         try:
-            http_context = HttpContext.deserialize(rq.object['context'].encode())
+            http_context = HttpContext.deserialize(rq.object['context'].encode(), rq.payload_iter)
             logging.debug(
                 '                    ... %s %s',
                 http_context.method,
@@ -207,10 +207,11 @@ class Worker(object):
 
             http_context.add_header('X-Worker-Name', str(self.gate.name))
 
-            response_object['content'] = list(content)
             response_object['status'] = http_context.status
             response_object['headers'] = http_context.headers
-            self.stream.reply(rq, response_object)
+            # Content shouldn't be serialized, so we are send it as separated argument,
+            # which will be transferred via gipc pipe
+            self.stream.reply(rq, response_object, content)
         # pylint: disable=W0703
         except Exception as e:
             logging.error(traceback.format_exc())

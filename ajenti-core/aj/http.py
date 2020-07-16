@@ -52,7 +52,13 @@ class HttpRoot(object):
                 http_context.run_response()
                 return [b'Invalid URL Prefix']
 
-        content = self.handler.handle(http_context)
+
+        content_generator = self.handler.handle(http_context)
+
+        # We received content generator,
+        # but further program expects array of strings,
+        # so we need adapt it for time being
+        content = ''.join(str(r) for r in content_generator)
 
         if http_context.prefix:
             for index, header in enumerate(http_context.headers):
@@ -61,7 +67,7 @@ class HttpRoot(object):
 
         http_context.run_response()
         gevent.sleep(0)
-        return content
+        return [content]
 
 
 class HttpMiddlewareAggregator(BaseHttpHandler):
@@ -122,7 +128,9 @@ class HttpContext(object):
         self.headers = []
         self.response_ready = False
         self.status = None
-        self.body = None
+        self._plain_body = None
+        self._plain_body_assigned = False
+        self.body_iterator = None
         self.query = None
         self.form_cgi_query = None
         self.url_cgi_query = None
@@ -133,14 +141,23 @@ class HttpContext(object):
         if self.method in ['POST', 'PUT', 'DELETE']:
             ctype = self.env.get('CONTENT_TYPE', 'application/x-www-form-urlencoded')
             if 'wsgi.input' in self.env:
-                self.body = self.env['wsgi.input'].read()
+
+                # If we receive "x-www-form-urlencoded",
+                # then we can read whole request's body
                 if ctype.startswith('application/x-www-form-urlencoded') or \
                         ctype.startswith('multipart/form-data'):
+                    input = self.env['wsgi.input'].read()
+                    self.body_iterator = [input]
                     self.form_cgi_query = cgi.FieldStorage(
-                        fp=six.StringIO(self.body),
+                        fp=six.StringIO(input),
                         environ=self.env,
                         keep_blank_values=1
                     )
+
+                # Otherwise we need get request's body partly
+                # and share it as generator
+                else:
+                    self.body_iterator = self.body_generator(1024)
         else:
             # prevent hanging on weird requests
             self.env['REQUEST_METHOD'] = 'GET'
@@ -154,8 +171,35 @@ class HttpContext(object):
         if self.url_cgi_query:
             self.query.update(dict((k, self.url_cgi_query[k].value) for k in self.url_cgi_query))
 
+
+    # To keep previous HTTP handlers work correctly
+    # we should provide "body" property
+    # but it should resolve generator only when body value requested
+
+    @property
+    def body(self):
+        if not self._plain_body_assigned:
+            self._plain_body = ''.join(c for c in self.body_iterator) or None
+            self._plain_body_assigned = True
+        return self._plain_body
+
+    @body.setter
+    def body_setter(self, value):
+        self.body_iterator = [value]
+
+    def body_generator(self, buffer_size):
+        inp = self.env['wsgi.input']
+        line = inp.read(buffer_size)
+        while line != b'':
+            yield line
+            line = inp.readline(buffer_size)
+
     def json_body(self):
-        return json.loads(self.body.decode('utf-8'))
+        if self.body:
+            data = self.body.decode('utf-8')
+            return json.loads(data)
+        return None
+
 
     def dump_env(self):
         print('\n'.join('%s = %s' % (x, self.env[x]) for x in sorted(list(self.env))))
@@ -169,27 +213,30 @@ class HttpContext(object):
         return env
 
     def serialize(self):
+
+        # Serializing will be used to share data between processes,
+        # And we cannot pickle body generator, so it will be shared
+        # with process via "gipc" pipe (see: WorkerGate)
         return pickle.dumps({
             'env': self.get_cleaned_env(),
             'path': self.path,
             'headers': self.headers,
-            'body': base64.b64encode(self.body) if self.body else None,
             'query': self.query,
             'prefix': self.prefix,
             'method': self.method,
         }, protocol=0)
 
     @classmethod
-    def deserialize(cls, data):
+    def deserialize(cls, data, body_iterator):
         data = pickle.loads(data)
-        self = cls(data['env'])
-        self.path = data['path']
-        self.headers = data['headers']
-        self.body = base64.b64decode(data['body']) if data['body'] else None
-        self.query = data['query']
-        self.prefix = data['prefix']
-        self.method = data['method']
-        return self
+        context = cls(data['env'])
+        context.path = data['path']
+        context.headers = data['headers']
+        context.body_iterator = body_iterator
+        context.query = data['query']
+        context.prefix = data['prefix']
+        context.method = data['method']
+        return context
 
     def add_header(self, key, value):
         """
